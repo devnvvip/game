@@ -4,6 +4,8 @@ using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem.UI;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine.SceneManagement;
@@ -19,7 +21,7 @@ namespace StreamerGame.Editor
     [InitializeOnLoad]
     public static class SceneAutoBuilder
     {
-        private const string SceneVersion = "StreamerIdol_v1.0.4";
+        private const string SceneVersion = "StreamerIdol_v2.0.0_PBR";
         private const string ScenePrefKey = "StreamerIdol_BuiltVersion";
         private const string ScenePath = "Assets/Scenes/MainStreamerScene.unity";
 
@@ -43,34 +45,40 @@ namespace StreamerGame.Editor
         {
             try
             {
-                Debug.Log("[SceneAutoBuilder] Starting procedural construction of Idol Streamer Apartment Scene...");
+                Debug.Log("[SceneAutoBuilder] Starting realistic graphical construction of Idol Streamer Apartment Scene...");
 
-                // Create new scene
+                // 1. Generate CC0 PBR Textures
+                PBRTextureGenerator.GenerateAllTextures();
+
+                // 2. Create new scene
                 Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
-                // Setup Render Settings & Environment
-                SetupEnvironment();
+                // 3. Setup Render Settings & Post Processing Volume
+                SetupEnvironmentAndPostProcessing();
 
-                // Build 3D Apartment
+                // 4. Build 3D Apartment with PBR materials
                 GameObject apartmentRoot = new GameObject("Apartment");
                 BuildApartmentGeometry(apartmentRoot);
 
-                // Build Props & Interactables
+                // 5. Build Props, Furniture, & Interactables
                 GameObject propsRoot = new GameObject("InteractableProps");
                 Transform sitPoint;
                 BuildPropsAndInteractables(propsRoot, out sitPoint);
 
-                // Setup Lighting
+                // 6. Setup Lighting & Atmospheric Probes
                 Light sunLight, ceilingLight, ringLight, bedLamp;
-                SetupLighting(apartmentRoot, out sunLight, out ceilingLight, out ringLight, out bedLamp);
+                SetupLightingAndProbes(apartmentRoot, out sunLight, out ceilingLight, out ringLight, out bedLamp);
 
-                // Build Player
+                // 7. Atmospheric Floating Dust Particles
+                CreateDustMotes(apartmentRoot);
+
+                // 8. Build Player
                 GameObject playerObj = BuildPlayer(sitPoint);
 
-                // Build UI Canvas
+                // 9. Build UI Canvas
                 GameObject canvasObj = BuildUICanvas();
 
-                // Build Managers
+                // 10. Build Managers
                 BuildManagers(sunLight, ceilingLight, ringLight, bedLamp, canvasObj);
 
                 // Ensure Scenes folder exists
@@ -81,14 +89,14 @@ namespace StreamerGame.Editor
 
                 // Save Scene
                 bool saved = EditorSceneManager.SaveScene(scene, ScenePath);
-                Debug.Log($"[SceneAutoBuilder] Saved scene to {ScenePath}: {saved}");
+                Debug.Log($"[SceneAutoBuilder] Saved realistic scene to {ScenePath}: {saved}");
 
                 // Register Scene in Build Settings at index 0
                 AddSceneToBuildSettings(ScenePath);
 
                 // Mark version as built
                 EditorPrefs.SetString(ScenePrefKey, SceneVersion);
-                Debug.Log($"[SceneAutoBuilder] Scene build completed successfully! Version: {SceneVersion}");
+                Debug.Log($"[SceneAutoBuilder] Realistic Scene build completed successfully! Version: {SceneVersion}");
             }
             catch (Exception ex)
             {
@@ -96,10 +104,44 @@ namespace StreamerGame.Editor
             }
         }
 
-        private static void SetupEnvironment()
+        private static void SetupEnvironmentAndPostProcessing()
         {
-            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-            RenderSettings.ambientLight = new Color(0.6f, 0.65f, 0.75f);
+            RenderSettings.ambientMode = AmbientMode.Flat;
+            RenderSettings.ambientLight = new Color(0.55f, 0.60f, 0.70f);
+
+            // Create Post Processing Volume
+            GameObject volumeObj = new GameObject("Global_PostProcessingVolume");
+            Volume vol = volumeObj.AddComponent<Volume>();
+            vol.isGlobal = true;
+            vol.priority = 1f;
+
+            VolumeProfile profile = AssetDatabase.LoadAssetAtPath<VolumeProfile>("Assets/Settings/DefaultVolumeProfile.asset");
+            if (profile != null)
+            {
+                vol.sharedProfile = profile;
+            }
+            else
+            {
+                // Create a runtime profile if not found
+                VolumeProfile runtimeProfile = ScriptableObject.CreateInstance<VolumeProfile>();
+                Bloom bloom = runtimeProfile.Add<Bloom>(true);
+                bloom.threshold.value = 0.9f;
+                bloom.intensity.value = 0.5f;
+
+                Vignette vig = runtimeProfile.Add<Vignette>(true);
+                vig.intensity.value = 0.25f;
+                vig.smoothness.value = 0.4f;
+
+                ColorAdjustments colorAdj = runtimeProfile.Add<ColorAdjustments>(true);
+                colorAdj.postExposure.value = 0.2f;
+                colorAdj.contrast.value = 10f;
+                colorAdj.saturation.value = 8f;
+
+                Tonemapping tonemap = runtimeProfile.Add<Tonemapping>(true);
+                tonemap.mode.value = TonemappingMode.ACES;
+
+                vol.sharedProfile = runtimeProfile;
+            }
         }
 
         private static Shader GetLitShader()
@@ -110,30 +152,61 @@ namespace StreamerGame.Editor
             return s;
         }
 
-        private static Material CreateMaterial(string name, Color color, float smoothness = 0.5f, float metallic = 0.1f)
+        private static Material CreatePBRMaterial(string name, Color color, string albedoPath = "", string normalPath = "", float smoothness = 0.5f, float metallic = 0.05f)
         {
             Material mat = new Material(GetLitShader())
             {
                 name = name,
                 color = color
             };
+
+            if (!string.IsNullOrEmpty(albedoPath))
+            {
+                Texture2D albedo = AssetDatabase.LoadAssetAtPath<Texture2D>(albedoPath);
+                if (albedo != null)
+                {
+                    mat.mainTexture = albedo;
+                    mat.SetColor("_BaseColor", color);
+                }
+            }
+
+            if (!string.IsNullOrEmpty(normalPath))
+            {
+                Texture2D normal = AssetDatabase.LoadAssetAtPath<Texture2D>(normalPath);
+                if (normal != null)
+                {
+                    mat.EnableKeyword("_NORMALMAP");
+                    mat.SetTexture("_BumpMap", normal);
+                    mat.SetFloat("_BumpScale", 1.0f);
+                }
+            }
+
             if (mat.HasProperty("_Smoothness")) mat.SetFloat("_Smoothness", smoothness);
             if (mat.HasProperty("_Glossiness")) mat.SetFloat("_Glossiness", smoothness);
             if (mat.HasProperty("_Metallic")) mat.SetFloat("_Metallic", metallic);
+
             return mat;
         }
 
-        private static Material CreateEmissiveMaterial(string name, Color color, Color emissionColor)
+        private static Material CreateEmissivePBRMaterial(string name, Color baseColor, Color emissionColor, string texturePath = "")
         {
-            Material mat = CreateMaterial(name, color, 0.8f, 0.2f);
+            Material mat = CreatePBRMaterial(name, baseColor, texturePath, "", 0.85f, 0.1f);
             mat.EnableKeyword("_EMISSION");
             if (mat.HasProperty("_EmissionColor")) mat.SetColor("_EmissionColor", emissionColor);
+            if (!string.IsNullOrEmpty(texturePath))
+            {
+                Texture2D tex = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
+                if (tex != null && mat.HasProperty("_EmissionMap"))
+                {
+                    mat.SetTexture("_EmissionMap", tex);
+                }
+            }
             return mat;
         }
 
-        private static void SetupLighting(GameObject parent, out Light sun, out Light ceiling, out Light ring, out Light bed)
+        private static void SetupLightingAndProbes(GameObject parent, out Light sun, out Light ceiling, out Light ring, out Light bed)
         {
-            GameObject lightsObj = new GameObject("Lighting");
+            GameObject lightsObj = new GameObject("Lighting_And_Probes");
             lightsObj.transform.SetParent(parent.transform);
 
             // Sun Directional Light
@@ -142,8 +215,9 @@ namespace StreamerGame.Editor
             sun = sunObj.AddComponent<Light>();
             sun.type = LightType.Directional;
             sun.color = new Color(1f, 0.92f, 0.82f);
-            sun.intensity = 1.1f;
+            sun.intensity = 1.15f;
             sun.shadows = LightShadows.Soft;
+            sun.shadowNormalBias = 0.4f;
             sunObj.transform.rotation = Quaternion.Euler(28f, 50f, 0f);
 
             // Ceiling Recessed Room Light
@@ -152,9 +226,9 @@ namespace StreamerGame.Editor
             ceilObj.transform.position = new Vector3(0f, 2.9f, 0f);
             ceiling = ceilObj.AddComponent<Light>();
             ceiling.type = LightType.Point;
-            ceiling.color = new Color(0.95f, 0.95f, 1f);
-            ceiling.intensity = 0.8f;
-            ceiling.range = 14f;
+            ceiling.color = new Color(0.96f, 0.96f, 1f);
+            ceiling.intensity = 0.85f;
+            ceiling.range = 15f;
             ceiling.shadows = LightShadows.Soft;
 
             // Streamer Studio Ring Light (Spotlight)
@@ -164,10 +238,10 @@ namespace StreamerGame.Editor
             ringObj.transform.rotation = Quaternion.Euler(15f, 180f, 0f);
             ring = ringObj.AddComponent<Light>();
             ring.type = LightType.Spot;
-            ring.spotAngle = 75f;
-            ring.color = new Color(1f, 0.95f, 0.9f);
-            ring.intensity = 1.6f;
-            ring.range = 6f;
+            ring.spotAngle = 78f;
+            ring.color = new Color(1f, 0.96f, 0.92f);
+            ring.intensity = 1.8f;
+            ring.range = 7f;
             ring.shadows = LightShadows.Soft;
             ring.enabled = false;
 
@@ -177,19 +251,81 @@ namespace StreamerGame.Editor
             bedObj.transform.position = new Vector3(-3.8f, 0.9f, -1.8f);
             bed = bedObj.AddComponent<Light>();
             bed.type = LightType.Point;
-            bed.color = new Color(1f, 0.8f, 0.55f);
-            bed.intensity = 0.6f;
-            bed.range = 5f;
+            bed.color = new Color(1f, 0.82f, 0.58f);
+            bed.intensity = 0.65f;
+            bed.range = 5.5f;
             bed.shadows = LightShadows.Soft;
+
+            // Studio Reflection Probe (for realistic PBR floor and metal reflections)
+            GameObject probeObj = new GameObject("Studio_ReflectionProbe");
+            probeObj.transform.SetParent(lightsObj.transform);
+            probeObj.transform.position = new Vector3(2.5f, 1.5f, 2.0f);
+            ReflectionProbe probe = probeObj.AddComponent<ReflectionProbe>();
+            probe.size = new Vector3(16f, 6f, 12f);
+            probe.center = new Vector3(0f, 0f, 0f);
+            probe.mode = ReflectionProbeMode.Realtime;
+            probe.refreshMode = ReflectionProbeRefreshMode.OnAwake;
+            probe.timeSlicingMode = ReflectionProbeTimeSlicingMode.AllFacesAtOnce;
+            probe.hdr = true;
+
+            // Light Probe Group for smooth indirect lighting
+            GameObject lpgObj = new GameObject("Apartment_LightProbeGroup");
+            lpgObj.transform.SetParent(lightsObj.transform);
+            LightProbeGroup lpg = lpgObj.AddComponent<LightProbeGroup>();
+            Vector3[] probePositions = new Vector3[18];
+            int idx = 0;
+            float[] xPos = new float[] { -4.5f, 0f, 4.0f };
+            float[] zPos = new float[] { -3.0f, 0f, 3.5f };
+            float[] yPos = new float[] { 0.8f, 2.0f };
+            for (int y = 0; y < yPos.Length; y++)
+            {
+                for (int x = 0; x < xPos.Length; x++)
+                {
+                    for (int z = 0; z < zPos.Length; z++)
+                    {
+                        probePositions[idx++] = new Vector3(xPos[x], yPos[y], zPos[z]);
+                    }
+                }
+            }
+            lpg.probePositions = probePositions;
+        }
+
+        private static void CreateDustMotes(GameObject root)
+        {
+            GameObject dustObj = new GameObject("Atmospheric_DustMotes");
+            dustObj.transform.SetParent(root.transform);
+            dustObj.transform.position = new Vector3(0f, 1.5f, 0f);
+
+            ParticleSystem ps = dustObj.AddComponent<ParticleSystem>();
+            var main = ps.main;
+            main.loop = true;
+            main.startLifetime = 8f;
+            main.startSpeed = 0.08f;
+            main.startSize = 0.025f;
+            main.startColor = new Color(1f, 1f, 1f, 0.25f);
+            main.maxParticles = 60;
+
+            var emission = ps.emission;
+            emission.rateOverTime = 8f;
+
+            var shape = ps.shape;
+            shape.shapeType = ParticleSystemShapeType.Box;
+            shape.scale = new Vector3(12f, 2.5f, 8f);
+
+            var velOverLifetime = ps.velocityOverLifetime;
+            velOverLifetime.enabled = true;
+            velOverLifetime.x = new ParticleSystem.MinMaxCurve(-0.02f, 0.02f);
+            velOverLifetime.y = new ParticleSystem.MinMaxCurve(-0.01f, 0.02f);
+            velOverLifetime.z = new ParticleSystem.MinMaxCurve(-0.02f, 0.02f);
         }
 
         private static void BuildApartmentGeometry(GameObject root)
         {
-            Material floorMat = CreateMaterial("Mat_WoodFloor", new Color(0.35f, 0.25f, 0.18f), 0.6f, 0.05f);
-            Material wallMat = CreateMaterial("Mat_ModernWall", new Color(0.92f, 0.92f, 0.93f), 0.2f, 0f);
-            Material ceilingMat = CreateMaterial("Mat_Ceiling", new Color(0.96f, 0.96f, 0.96f), 0.1f, 0f);
-            Material studioAccentMat = CreateMaterial("Mat_StudioAccent", new Color(0.12f, 0.14f, 0.18f), 0.3f, 0.1f);
-            Material glassMat = CreateMaterial("Mat_WindowGlass", new Color(0.6f, 0.8f, 0.95f, 0.3f), 0.9f, 0.2f);
+            Material floorMat = CreatePBRMaterial("Mat_WoodFloor_PBR", Color.white, "Assets/Textures/WoodParquet_Albedo.png", "Assets/Textures/WoodParquet_Normal.png", 0.65f, 0.04f);
+            Material wallMat = CreatePBRMaterial("Mat_ModernWall_PBR", Color.white, "Assets/Textures/ModernPlaster_Albedo.png", "Assets/Textures/ModernPlaster_Normal.png", 0.25f, 0.01f);
+            Material ceilingMat = CreatePBRMaterial("Mat_Ceiling_PBR", Color.white, "Assets/Textures/ModernPlaster_Albedo.png", "Assets/Textures/ModernPlaster_Normal.png", 0.15f, 0f);
+            Material studioAccentMat = CreatePBRMaterial("Mat_StudioAcoustic_PBR", Color.white, "Assets/Textures/AcousticWall_Albedo.png", "Assets/Textures/AcousticWall_Normal.png", 0.35f, 0.08f);
+            Material glassMat = CreatePBRMaterial("Mat_WindowGlass", new Color(0.6f, 0.8f, 0.95f, 0.25f), "", "", 0.95f, 0.1f);
 
             // Floor (14m x 10m)
             CreateBox("Floor", root.transform, new Vector3(0f, -0.05f, 0f), new Vector3(14f, 0.1f, 10f), floorMat);
@@ -218,16 +354,20 @@ namespace StreamerGame.Editor
 
         private static void BuildPropsAndInteractables(GameObject root, out Transform sitPoint)
         {
-            Material deskMat = CreateMaterial("Mat_DeskBlack", new Color(0.1f, 0.1f, 0.12f), 0.7f, 0.1f);
-            Material metalMat = CreateMaterial("Mat_ChromeMetal", new Color(0.25f, 0.25f, 0.28f), 0.8f, 0.8f);
-            Material screenOffMat = CreateEmissiveMaterial("Mat_MonitorScreens", new Color(0.08f, 0.1f, 0.12f), new Color(0.1f, 0.2f, 0.4f) * 1.5f);
-            Material bedWoodMat = CreateMaterial("Mat_BedWood", new Color(0.4f, 0.26f, 0.16f), 0.4f, 0.05f);
-            Material bedClothMat = CreateMaterial("Mat_BedSheet", new Color(0.85f, 0.88f, 0.92f), 0.2f, 0f);
-            Material pillowMat = CreateMaterial("Mat_Pillow", new Color(0.95f, 0.95f, 0.95f), 0.2f, 0f);
-            Material chairLeatherMat = CreateMaterial("Mat_GamingChair", new Color(0.12f, 0.12f, 0.15f), 0.5f, 0.1f);
-            Material chairAccentMat = CreateMaterial("Mat_ChairNeon", new Color(0f, 0.8f, 1f), 0.7f, 0.2f);
-            Material fridgeMat = CreateMaterial("Mat_FridgeSilver", new Color(0.7f, 0.72f, 0.75f), 0.75f, 0.6f);
-            Material marbleMat = CreateMaterial("Mat_KitchenMarble", new Color(0.92f, 0.92f, 0.9f), 0.85f, 0.05f);
+            Material deskMat = CreatePBRMaterial("Mat_DeskBlack", new Color(0.12f, 0.12f, 0.14f), "", "", 0.65f, 0.1f);
+            Material metalMat = CreatePBRMaterial("Mat_ChromeMetal", new Color(0.85f, 0.85f, 0.88f), "", "", 0.90f, 0.92f);
+            Material bedWoodMat = CreatePBRMaterial("Mat_BedWood", new Color(0.42f, 0.28f, 0.18f), "Assets/Textures/WoodParquet_Albedo.png", "Assets/Textures/WoodParquet_Normal.png", 0.45f, 0.05f);
+            Material bedClothMat = CreatePBRMaterial("Mat_BedSheet_PBR", Color.white, "Assets/Textures/FabricLinen_Albedo.png", "Assets/Textures/FabricLinen_Normal.png", 0.2f, 0f);
+            Material pillowMat = CreatePBRMaterial("Mat_Pillow_PBR", new Color(0.95f, 0.95f, 0.95f), "Assets/Textures/FabricLinen_Albedo.png", "Assets/Textures/FabricLinen_Normal.png", 0.2f, 0f);
+            Material chairLeatherMat = CreatePBRMaterial("Mat_GamingChair", new Color(0.12f, 0.12f, 0.15f), "", "", 0.55f, 0.1f);
+            Material chairAccentMat = CreateEmissivePBRMaterial("Mat_ChairNeon", new Color(0f, 0.8f, 1f), new Color(0f, 0.8f, 1f) * 1.5f);
+            Material fridgeMat = CreatePBRMaterial("Mat_FridgeSilver", new Color(0.8f, 0.82f, 0.85f), "", "", 0.85f, 0.7f);
+            Material marbleMat = CreatePBRMaterial("Mat_KitchenMarble_PBR", Color.white, "Assets/Textures/MarbleCounter_Albedo.png", "Assets/Textures/MarbleCounter_Normal.png", 0.88f, 0.05f);
+
+            // Screen Materials
+            Material centerScreenMat = CreateEmissivePBRMaterial("Mat_CenterMonitor_Screen", Color.white, Color.white * 1.8f, "Assets/Textures/Monitor_CenterScreen.png");
+            Material leftScreenMat = CreateEmissivePBRMaterial("Mat_LeftMonitor_Screen", Color.white, Color.white * 1.6f, "Assets/Textures/Monitor_LeftChat.png");
+            Material rightScreenMat = CreateEmissivePBRMaterial("Mat_RightMonitor_Screen", Color.white, Color.white * 1.6f, "Assets/Textures/Monitor_RightMixer.png");
 
             // ==========================================
             // 1. STREAMER STUDIO SETUP
@@ -236,34 +376,31 @@ namespace StreamerGame.Editor
             studioDeskObj.transform.SetParent(root.transform);
             studioDeskObj.transform.position = new Vector3(3.2f, 0f, 3.8f);
 
-            // Desk tabletop (2.4m wide x 0.9m deep x 0.75m high)
+            // Desk tabletop
             CreateBox("DeskTop", studioDeskObj.transform, new Vector3(0f, 0.73f, 0f), new Vector3(2.4f, 0.05f, 0.9f), deskMat);
             CreateBox("DeskLeg_L", studioDeskObj.transform, new Vector3(-1.1f, 0.36f, 0f), new Vector3(0.06f, 0.72f, 0.8f), metalMat);
             CreateBox("DeskLeg_R", studioDeskObj.transform, new Vector3(1.1f, 0.36f, 0f), new Vector3(0.06f, 0.72f, 0.8f), metalMat);
 
-            // Triple Monitor Setup
-            // Center Monitor 32" Curved
-            CreateBox("Monitor_Center", studioDeskObj.transform, new Vector3(0f, 1.15f, 0.32f), new Vector3(0.9f, 0.52f, 0.04f), screenOffMat);
+            // Triple Monitor Setup with High-Res Emissive Displays
+            CreateBox("Monitor_Center", studioDeskObj.transform, new Vector3(0f, 1.15f, 0.32f), new Vector3(0.9f, 0.52f, 0.04f), centerScreenMat);
             CreateBox("Monitor_Stand_Center", studioDeskObj.transform, new Vector3(0f, 0.85f, 0.35f), new Vector3(0.18f, 0.25f, 0.05f), metalMat);
 
-            // Left Chat Monitor (vertical portrait)
-            GameObject monLeft = CreateBox("Monitor_Left_Chat", studioDeskObj.transform, new Vector3(-0.65f, 1.18f, 0.22f), new Vector3(0.35f, 0.60f, 0.04f), screenOffMat);
+            GameObject monLeft = CreateBox("Monitor_Left_Chat", studioDeskObj.transform, new Vector3(-0.65f, 1.18f, 0.22f), new Vector3(0.35f, 0.60f, 0.04f), leftScreenMat);
             monLeft.transform.localRotation = Quaternion.Euler(0f, 25f, 0f);
 
-            // Right Monitor (angled)
-            GameObject monRight = CreateBox("Monitor_Right_Aux", studioDeskObj.transform, new Vector3(0.65f, 1.15f, 0.22f), new Vector3(0.7f, 0.48f, 0.04f), screenOffMat);
+            GameObject monRight = CreateBox("Monitor_Right_Aux", studioDeskObj.transform, new Vector3(0.65f, 1.15f, 0.22f), new Vector3(0.7f, 0.48f, 0.04f), rightScreenMat);
             monRight.transform.localRotation = Quaternion.Euler(0f, -25f, 0f);
 
-            // Streamer Webcam (on top of center monitor)
+            // Streamer Webcam 4K
             CreateBox("Webcam_4K", studioDeskObj.transform, new Vector3(0f, 1.44f, 0.32f), new Vector3(0.12f, 0.04f, 0.04f), metalMat);
 
-            // High-end PC Tower
+            // High-end PC Tower with RGB Fans
             GameObject pcTower = CreateBox("PC_Tower_RGB", studioDeskObj.transform, new Vector3(0.95f, 1.05f, 0.15f), new Vector3(0.24f, 0.52f, 0.50f), deskMat);
-            CreateBox("PC_GlassWindow", pcTower.transform, new Vector3(-0.13f, 0f, 0f), new Vector3(0.02f, 0.46f, 0.46f), CreateEmissiveMaterial("Mat_PCGlow", Color.cyan, Color.cyan * 1.5f));
+            CreateBox("PC_GlassWindow", pcTower.transform, new Vector3(-0.13f, 0f, 0f), new Vector3(0.02f, 0.46f, 0.46f), CreateEmissivePBRMaterial("Mat_PCGlow", Color.cyan, Color.cyan * 2.2f));
 
             // Microphone on Boom Arm
             GameObject micBase = CreateBox("Mic_BoomArm", studioDeskObj.transform, new Vector3(-0.7f, 0.76f, -0.1f), new Vector3(0.08f, 0.35f, 0.08f), metalMat);
-            CreateBox("Mic_Capsule", micBase.transform, new Vector3(0.2f, 0.35f, 0.2f), new Vector3(0.06f, 0.14f, 0.06f), CreateMaterial("Mat_MicBlack", Color.black, 0.8f, 0.5f));
+            CreateBox("Mic_Capsule", micBase.transform, new Vector3(0.2f, 0.35f, 0.2f), new Vector3(0.06f, 0.14f, 0.06f), CreatePBRMaterial("Mat_MicBlack", new Color(0.1f, 0.1f, 0.1f), "", "", 0.8f, 0.6f));
 
             // Gaming Chair
             GameObject chairObj = new GameObject("GamingChair");
@@ -291,19 +428,17 @@ namespace StreamerGame.Editor
             ringLightObj.transform.SetParent(root.transform);
             ringLightObj.transform.position = new Vector3(2.3f, 0f, 2.5f);
             CreateBox("Tripod_Stand", ringLightObj.transform, new Vector3(0f, 0.7f, 0f), new Vector3(0.05f, 1.4f, 0.05f), metalMat);
-            GameObject ringMesh = CreateBox("Ring_Head", ringLightObj.transform, new Vector3(0f, 1.45f, 0f), new Vector3(0.45f, 0.45f, 0.05f), CreateEmissiveMaterial("Mat_RingGlow", Color.white, Color.white * 2.0f));
+            GameObject ringMesh = CreateBox("Ring_Head", ringLightObj.transform, new Vector3(0f, 1.45f, 0f), new Vector3(0.45f, 0.45f, 0.05f), CreateEmissivePBRMaterial("Mat_RingGlow", Color.white, Color.white * 2.5f));
             StudioRingLight ringScript = ringLightObj.AddComponent<StudioRingLight>();
             ringScript.ringMeshRenderer = ringMesh.GetComponent<Renderer>();
 
-            // Trophy Shelf with Gold Play Button
+            // Trophy Shelf with YouTube Gold Play Button
             GameObject shelfObj = new GameObject("Trophy_Shelf");
             shelfObj.transform.SetParent(root.transform);
             shelfObj.transform.position = new Vector3(5.8f, 1.4f, 4.85f);
             CreateBox("Shelf_Plank1", shelfObj.transform, new Vector3(0f, 0f, 0f), new Vector3(1.6f, 0.04f, 0.3f), deskMat);
             CreateBox("Shelf_Plank2", shelfObj.transform, new Vector3(0f, 0.45f, 0f), new Vector3(1.6f, 0.04f, 0.3f), deskMat);
-            // YouTube Golden Creator Award
-            CreateBox("Gold_PlayButton", shelfObj.transform, new Vector3(-0.4f, 0.22f, 0.05f), new Vector3(0.32f, 0.25f, 0.04f), CreateMaterial("Mat_GoldAward", new Color(1f, 0.84f, 0f), 0.9f, 0.9f));
-            // Anime Idol Figure
+            CreateBox("Gold_PlayButton", shelfObj.transform, new Vector3(-0.4f, 0.22f, 0.05f), new Vector3(0.32f, 0.25f, 0.04f), CreatePBRMaterial("Mat_GoldAward", new Color(1f, 0.84f, 0f), "", "", 0.95f, 0.95f));
             CreateBox("Idol_Figure", shelfObj.transform, new Vector3(0.3f, 0.15f, 0.05f), new Vector3(0.1f, 0.25f, 0.1f), chairAccentMat);
 
             // ==========================================
@@ -313,13 +448,12 @@ namespace StreamerGame.Editor
             bedObj.transform.SetParent(root.transform);
             bedObj.transform.position = new Vector3(-4.8f, 0f, -2.5f);
 
-            // Bed Frame & Mattress (2m wide x 2.2m long)
             CreateBox("Bed_Frame", bedObj.transform, new Vector3(0f, 0.2f, 0f), new Vector3(2.0f, 0.3f, 2.2f), bedWoodMat);
             CreateBox("Bed_Headboard", bedObj.transform, new Vector3(0f, 0.8f, -1.05f), new Vector3(2.1f, 1.1f, 0.12f), bedWoodMat);
             CreateBox("Bed_Mattress", bedObj.transform, new Vector3(0f, 0.45f, 0.05f), new Vector3(1.85f, 0.3f, 2.0f), bedClothMat);
             CreateBox("Bed_Pillow_L", bedObj.transform, new Vector3(-0.5f, 0.65f, -0.7f), new Vector3(0.6f, 0.12f, 0.4f), pillowMat);
             CreateBox("Bed_Pillow_R", bedObj.transform, new Vector3(0.5f, 0.65f, -0.7f), new Vector3(0.6f, 0.12f, 0.4f), pillowMat);
-            CreateBox("Bed_Duvet", bedObj.transform, new Vector3(0f, 0.62f, 0.35f), new Vector3(1.88f, 0.06f, 1.35f), CreateMaterial("Mat_Duvet", new Color(0.2f, 0.35f, 0.5f), 0.3f, 0f));
+            CreateBox("Bed_Duvet", bedObj.transform, new Vector3(0f, 0.62f, 0.35f), new Vector3(1.88f, 0.06f, 1.35f), CreatePBRMaterial("Mat_Duvet", new Color(0.2f, 0.35f, 0.5f), "Assets/Textures/FabricLinen_Albedo.png", "Assets/Textures/FabricLinen_Normal.png", 0.3f, 0f));
             bedObj.AddComponent<Bed>();
 
             // Nightstand & Alarm Clock
@@ -328,16 +462,16 @@ namespace StreamerGame.Editor
             nightstand.transform.position = new Vector3(-3.5f, 0f, -3.4f);
             CreateBox("Nightstand_Table", nightstand.transform, new Vector3(0f, 0.3f, 0f), new Vector3(0.55f, 0.6f, 0.55f), bedWoodMat);
 
-            GameObject clockObj = CreateBox("Digital_AlarmClock", nightstand.transform, new Vector3(0f, 0.65f, 0f), new Vector3(0.25f, 0.1f, 0.12f), CreateMaterial("Mat_ClockBody", Color.black, 0.7f, 0.2f));
-            CreateBox("Clock_LED", clockObj.transform, new Vector3(0f, 0f, 0.065f), new Vector3(0.2f, 0.06f, 0.01f), CreateEmissiveMaterial("Mat_ClockRedLED", Color.red, Color.red * 2.5f));
+            GameObject clockObj = CreateBox("Digital_AlarmClock", nightstand.transform, new Vector3(0f, 0.65f, 0f), new Vector3(0.25f, 0.1f, 0.12f), CreatePBRMaterial("Mat_ClockBody", Color.black, "", "", 0.8f, 0.2f));
+            CreateBox("Clock_LED", clockObj.transform, new Vector3(0f, 0f, 0.065f), new Vector3(0.2f, 0.06f, 0.01f), CreateEmissivePBRMaterial("Mat_ClockRedLED", Color.red, Color.red * 3.0f));
             clockObj.AddComponent<AlarmClock>();
 
-            // Wardrobe
+            // Wardrobe with Mirror
             GameObject wardrobeObj = new GameObject("Wardrobe_Idol");
             wardrobeObj.transform.SetParent(root.transform);
             wardrobeObj.transform.position = new Vector3(-6.2f, 0f, 0.5f);
             CreateBox("Wardrobe_Cabinet", wardrobeObj.transform, new Vector3(0f, 1.25f, 0f), new Vector3(0.8f, 2.5f, 2.2f), deskMat);
-            CreateBox("Wardrobe_MirrorDoor", wardrobeObj.transform, new Vector3(0.42f, 1.25f, 0f), new Vector3(0.04f, 2.3f, 1.0f), CreateMaterial("Mat_Mirror", new Color(0.9f, 0.95f, 1f), 0.95f, 0.8f));
+            CreateBox("Wardrobe_MirrorDoor", wardrobeObj.transform, new Vector3(0.42f, 1.25f, 0f), new Vector3(0.04f, 2.3f, 1.0f), CreatePBRMaterial("Mat_Mirror", new Color(0.95f, 0.98f, 1f), "", "", 0.98f, 0.95f));
             wardrobeObj.AddComponent<Wardrobe>();
 
             // ==========================================
@@ -347,15 +481,12 @@ namespace StreamerGame.Editor
             kitchenObj.transform.SetParent(root.transform);
             kitchenObj.transform.position = new Vector3(0f, 0f, -3.8f);
 
-            // Kitchen Counter / Bar (3m long x 0.8m deep)
             CreateBox("Kitchen_Counter", kitchenObj.transform, new Vector3(0f, 0.45f, 0f), new Vector3(3.2f, 0.9f, 0.8f), marbleMat);
 
-            // Coffee Machine
             GameObject coffeeMachineObj = CreateBox("Espresso_CoffeeMachine", kitchenObj.transform, new Vector3(-0.8f, 1.08f, 0f), new Vector3(0.35f, 0.35f, 0.35f), metalMat);
             CreateBox("Coffee_Cup", coffeeMachineObj.transform, new Vector3(0f, -0.08f, 0.12f), new Vector3(0.1f, 0.12f, 0.1f), pillowMat);
             coffeeMachineObj.AddComponent<CoffeeMachine>();
 
-            // Refrigerator
             GameObject fridgeObj = CreateBox("Refrigerator_Smart", kitchenObj.transform, new Vector3(1.2f, 1.0f, 0f), new Vector3(0.85f, 2.0f, 0.75f), fridgeMat);
             CreateBox("Fridge_Handle", fridgeObj.transform, new Vector3(-0.35f, 0f, 0.4f), new Vector3(0.05f, 0.6f, 0.05f), metalMat);
             fridgeObj.AddComponent<Refrigerator>();
@@ -367,10 +498,9 @@ namespace StreamerGame.Editor
             bathroomObj.transform.SetParent(root.transform);
             bathroomObj.transform.position = new Vector3(-5.5f, 0f, 3.8f);
 
-            // Sink vanity
             GameObject sinkObj = CreateBox("Vanity_Sink", bathroomObj.transform, new Vector3(0f, 0.45f, 0f), new Vector3(1.2f, 0.88f, 0.65f), marbleMat);
             CreateBox("Chrome_Faucet", sinkObj.transform, new Vector3(0f, 0.55f, -0.15f), new Vector3(0.06f, 0.22f, 0.15f), metalMat);
-            CreateBox("Vanity_Mirror", sinkObj.transform, new Vector3(0f, 1.15f, 0.3f), new Vector3(1.0f, 0.8f, 0.04f), CreateMaterial("Mat_BathMirror", new Color(0.9f, 0.95f, 1f), 0.95f, 0.8f));
+            CreateBox("Vanity_Mirror", sinkObj.transform, new Vector3(0f, 1.15f, 0.3f), new Vector3(1.0f, 0.8f, 0.04f), CreatePBRMaterial("Mat_BathMirror", new Color(0.95f, 0.98f, 1f), "", "", 0.98f, 0.95f));
             sinkObj.AddComponent<BathroomSink>();
         }
 
@@ -394,7 +524,7 @@ namespace StreamerGame.Editor
         private static GameObject BuildPlayer(Transform sitPoint)
         {
             GameObject player = new GameObject("Player_IdolStreamer");
-            player.transform.position = new Vector3(-3.2f, 1.0f, -2.0f); // Start near bed
+            player.transform.position = new Vector3(-3.2f, 1.0f, -2.0f);
             player.transform.rotation = Quaternion.Euler(0f, 90f, 0f);
 
             CharacterController cc = player.AddComponent<CharacterController>();
@@ -423,6 +553,10 @@ namespace StreamerGame.Editor
             cam.fieldOfView = 65f;
             cam.nearClipPlane = 0.1f;
             cam.farClipPlane = 150f;
+
+            UniversalAdditionalCameraData camData = camObj.AddComponent<UniversalAdditionalCameraData>();
+            camData.renderPostProcessing = true;
+            camData.renderShadows = true;
 
             camObj.AddComponent<AudioListener>();
 
@@ -454,17 +588,14 @@ namespace StreamerGame.Editor
             eventSystemObj.AddComponent<EventSystem>();
             eventSystemObj.AddComponent<InputSystemUIInputModule>();
 
-            // ==========================================
             // TOP STATUS HUD
-            // ==========================================
             GameObject topBar = CreateUIEmpty("TopStatusBar", canvasObj.transform);
             SetRectTransform(topBar, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -40f), new Vector2(0f, 70f));
-            AddImage(topBar, new Color(0.08f, 0.1f, 0.14f, 0.85f));
+            AddImage(topBar, new Color(0.08f, 0.1f, 0.14f, 0.88f));
 
             Text phaseText = AddText(topBar, "PhaseText", "Buổi Sáng (07:00 - 11:30)", defaultFont, 20, Color.cyan, TextAnchor.MiddleLeft);
             SetRectTransform(phaseText.gameObject, new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(25f, 0f), new Vector2(350f, 40f));
 
-            // Energy & Mood
             Slider energySlider = CreateSimpleSlider("EnergySlider", topBar.transform, new Vector2(400f, 0f), "Năng lượng: ", defaultFont, Color.yellow);
             Slider moodSlider = CreateSimpleSlider("MoodSlider", topBar.transform, new Vector2(650f, 0f), "Tâm trạng: ", defaultFont, new Color(1f, 0.4f, 0.8f));
 
@@ -474,12 +605,10 @@ namespace StreamerGame.Editor
             Text revenueText = AddText(topBar, "RevenueText", "15,500,000 đ", defaultFont, 20, Color.green, TextAnchor.MiddleRight);
             SetRectTransform(revenueText.gameObject, new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(-25f, 0f), new Vector2(180f, 40f));
 
-            // ==========================================
             // QUEST CARD
-            // ==========================================
             GameObject questBox = CreateUIEmpty("QuestCard", canvasObj.transform);
             SetRectTransform(questBox, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(30f, -120f), new Vector2(380f, 100f));
-            AddImage(questBox, new Color(0.05f, 0.08f, 0.12f, 0.8f));
+            AddImage(questBox, new Color(0.05f, 0.08f, 0.12f, 0.85f));
 
             Text questTitle = AddText(questBox, "QuestTitle", "[NHIỆM VỤ] Tắt chuông báo thức", defaultFont, 18, Color.yellow, TextAnchor.UpperLeft);
             SetRectTransform(questTitle.gameObject, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, 1f), new Vector2(15f, -15f), new Vector2(-30f, 30f));
@@ -487,40 +616,33 @@ namespace StreamerGame.Editor
             Text questDesc = AddText(questBox, "QuestDesc", "Thức dậy và nhấn nút tắt chuông báo thức bên cạnh giường.", defaultFont, 15, Color.white, TextAnchor.UpperLeft);
             SetRectTransform(questDesc.gameObject, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0f, 0f), new Vector2(15f, 10f), new Vector2(-30f, -45f));
 
-            // ==========================================
             // RETICLE & INTERACTION PROMPT
-            // ==========================================
             GameObject reticle = CreateUIEmpty("ReticleDot", canvasObj.transform);
             SetRectTransform(reticle, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(8f, 8f));
             AddImage(reticle, Color.white);
 
             GameObject interactPromptBox = CreateUIEmpty("InteractionPromptBox", canvasObj.transform);
             SetRectTransform(interactPromptBox, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, -60f), new Vector2(400f, 45f));
-            AddImage(interactPromptBox, new Color(0f, 0f, 0f, 0.75f));
+            AddImage(interactPromptBox, new Color(0f, 0f, 0f, 0.8f));
             Text interactPromptText = AddText(interactPromptBox, "PromptText", "[E] Tương tác", defaultFont, 18, Color.yellow, TextAnchor.MiddleCenter);
             SetRectTransform(interactPromptText.gameObject, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
 
-            // ==========================================
             // NOTIFICATION TOAST
-            // ==========================================
             GameObject notifBox = CreateUIEmpty("NotificationToast", canvasObj.transform);
             SetRectTransform(notifBox, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -90f), new Vector2(600f, 50f));
-            AddImage(notifBox, new Color(0.1f, 0.35f, 0.2f, 0.9f));
+            AddImage(notifBox, new Color(0.1f, 0.35f, 0.2f, 0.95f));
             Text notifText = AddText(notifBox, "NotifText", "Thông báo", defaultFont, 17, Color.white, TextAnchor.MiddleCenter);
             SetRectTransform(notifText.gameObject, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
 
-            // ==========================================
             // LIVESTREAM OVERLAY UI
-            // ==========================================
             GameObject streamOverlay = CreateUIEmpty("LivestreamOverlay", canvasObj.transform);
             SetRectTransform(streamOverlay, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
             StreamOverlayUI overlayUI = streamOverlay.AddComponent<StreamOverlayUI>();
             overlayUI.overlayRoot = streamOverlay;
 
-            // Live Header Info
             GameObject liveHeader = CreateUIEmpty("LiveHeader", streamOverlay.transform);
             SetRectTransform(liveHeader, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -50f), new Vector2(0f, 60f));
-            AddImage(liveHeader, new Color(0.05f, 0.05f, 0.1f, 0.9f));
+            AddImage(liveHeader, new Color(0.05f, 0.05f, 0.1f, 0.92f));
 
             Text liveBadge = AddText(liveHeader, "LiveBadge", "● TRỰC TIẾP", defaultFont, 20, Color.red, TextAnchor.MiddleLeft);
             SetRectTransform(liveBadge.gameObject, new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(25f, 0f), new Vector2(160f, 40f));
@@ -548,7 +670,7 @@ namespace StreamerGame.Editor
             // Live Chat Panel (Right Side)
             GameObject chatPanel = CreateUIEmpty("LiveChatBox", streamOverlay.transform);
             SetRectTransform(chatPanel, new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(1f, 0.5f), new Vector2(-20f, -40f), new Vector2(420f, -160f));
-            AddImage(chatPanel, new Color(0.04f, 0.05f, 0.08f, 0.85f));
+            AddImage(chatPanel, new Color(0.04f, 0.05f, 0.08f, 0.88f));
 
             Text[] chatLines = new Text[8];
             for (int i = 0; i < 8; i++)
@@ -562,7 +684,7 @@ namespace StreamerGame.Editor
             // Question Modal
             GameObject qModal = CreateUIEmpty("InteractiveQuestionModal", streamOverlay.transform);
             SetRectTransform(qModal, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(650f, 380f));
-            AddImage(qModal, new Color(0.08f, 0.12f, 0.18f, 0.95f));
+            AddImage(qModal, new Color(0.08f, 0.12f, 0.18f, 0.96f));
             overlayUI.questionModal = qModal;
 
             Text qTopic = AddText(qModal, "QuestionTopic", "Fan hỏi ý kiến của bạn", defaultFont, 20, Color.yellow, TextAnchor.MiddleCenter);
@@ -597,16 +719,13 @@ namespace StreamerGame.Editor
             overlayUI.incidentActionButton = incActionBtn;
             overlayUI.incidentActionBtnText = incActionBtn.GetComponentInChildren<Text>();
 
-            // ==========================================
             // SMARTPHONE MODAL UI
-            // ==========================================
             GameObject phoneRoot = CreateUIEmpty("SmartphoneModal", canvasObj.transform);
             SetRectTransform(phoneRoot, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), Vector2.zero, new Vector2(380f, 720f));
             AddImage(phoneRoot, new Color(0.08f, 0.08f, 0.1f, 0.98f));
             PhoneUIController phoneCtrl = phoneRoot.AddComponent<PhoneUIController>();
             phoneCtrl.phoneRoot = phoneRoot;
 
-            // iPhone Notch / Island
             GameObject notch = CreateUIEmpty("DynamicIsland", phoneRoot.transform);
             SetRectTransform(notch, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -20f), new Vector2(130f, 32f));
             AddImage(notch, Color.black);
@@ -615,15 +734,12 @@ namespace StreamerGame.Editor
             SetRectTransform(phoneClock.gameObject, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(25f, -18f), new Vector2(100f, 30f));
             phoneCtrl.phoneClockText = phoneClock;
 
-            // Phone App Content Panels
-            // 1. Messages Panel
             GameObject msgPanel = CreateUIEmpty("MessagesAppPanel", phoneRoot.transform);
             SetRectTransform(msgPanel, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0.5f, 0.5f), new Vector2(0f, -25f), new Vector2(-30f, -120f));
             phoneCtrl.messagesPanel = msgPanel;
             Text msgContent = AddText(msgPanel, "MsgText", "<b>[QUẢN LÝ IDOL]:</b>\n'Tối nay nhớ lên sóng đúng giờ nhé em. Tinh thần thật tốt vào!'\n\n<b>[TRƯỞNG FANCLUB]:</b>\n'Tụi em đã đẩy top trending cho anh rồi ạ! Chúc anh buổi stream rực rỡ!'\n\n<b>[NHÃN HÀNG]:</b>\n'Nhãn hàng gửi tặng set quà tai nghe mới, chúc mừng idol!'", defaultFont, 16, Color.white, TextAnchor.UpperLeft);
             SetRectTransform(msgContent.gameObject, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
 
-            // 2. Social Panel
             GameObject socPanel = CreateUIEmpty("SocialAppPanel", phoneRoot.transform);
             SetRectTransform(socPanel, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0.5f, 0.5f), new Vector2(0f, -25f), new Vector2(-30f, -120f));
             phoneCtrl.socialPanel = socPanel;
@@ -638,7 +754,6 @@ namespace StreamerGame.Editor
             SetRectTransform(socStatus.gameObject, new Vector2(0f, 0.5f), new Vector2(1f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, -180f), new Vector2(0f, 60f));
             phoneCtrl.socialStatusText = socStatus;
 
-            // 3. Camera Panel
             GameObject camPanel = CreateUIEmpty("CameraAppPanel", phoneRoot.transform);
             SetRectTransform(camPanel, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0.5f, 0.5f), new Vector2(0f, -25f), new Vector2(-30f, -120f));
             phoneCtrl.cameraPanel = camPanel;
@@ -652,7 +767,6 @@ namespace StreamerGame.Editor
             camFlash.SetActive(false);
             phoneCtrl.cameraFlashImage = camFlash;
 
-            // 4. Schedule Panel
             GameObject schedPanel = CreateUIEmpty("ScheduleAppPanel", phoneRoot.transform);
             SetRectTransform(schedPanel, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0.5f, 0.5f), new Vector2(0f, -25f), new Vector2(-30f, -120f));
             phoneCtrl.schedulePanel = schedPanel;
@@ -660,7 +774,6 @@ namespace StreamerGame.Editor
             SetRectTransform(schedText.gameObject, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
             phoneCtrl.scheduleSummaryText = schedText;
 
-            // Phone App Switcher Bar (Bottom)
             GameObject bottomBar = CreateUIEmpty("PhoneNavBar", phoneRoot.transform);
             SetRectTransform(bottomBar, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 30f), new Vector2(-30f, 50f));
             Button b1 = CreateSimpleButton("Nav_Msg", bottomBar.transform, new Vector2(-120f, 0f), new Vector2(70f, 40f), "Chat", defaultFont, Color.gray);
@@ -672,13 +785,10 @@ namespace StreamerGame.Editor
             Button b4 = CreateSimpleButton("Nav_Sch", bottomBar.transform, new Vector2(120f, 0f), new Vector2(70f, 40f), "Lịch", defaultFont, Color.gray);
             b4.onClick.AddListener(phoneCtrl.OpenScheduleApp);
 
-            // Close Phone Button
             Button closePhoneBtn = CreateSimpleButton("ClosePhoneBtn", phoneRoot.transform, new Vector2(0f, -345f), new Vector2(120f, 8f), "", defaultFont, Color.white);
             closePhoneBtn.onClick.AddListener(phoneCtrl.TogglePhone);
 
-            // ==========================================
             // PAUSE MENU UI
-            // ==========================================
             GameObject pauseRoot = CreateUIEmpty("PauseMenu", canvasObj.transform);
             SetRectTransform(pauseRoot, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
             AddImage(pauseRoot, new Color(0f, 0f, 0f, 0.85f));
@@ -691,12 +801,10 @@ namespace StreamerGame.Editor
             pauseUI.resumeButton = resumeBtn;
             pauseUI.restartButton = restartBtn;
 
-            // ==========================================
             // END OF DAY SUMMARY UI
-            // ==========================================
             GameObject summaryRoot = CreateUIEmpty("DaySummaryModal", canvasObj.transform);
             SetRectTransform(summaryRoot, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
-            AddImage(summaryRoot, new Color(0.04f, 0.06f, 0.1f, 0.95f));
+            AddImage(summaryRoot, new Color(0.04f, 0.06f, 0.1f, 0.96f));
             DaySummaryUI summaryUI = summaryRoot.AddComponent<DaySummaryUI>();
             summaryUI.summaryRoot = summaryRoot;
 
@@ -726,15 +834,12 @@ namespace StreamerGame.Editor
             Button playAgainBtn = CreateSimpleButton("PlayAgainBtn", summaryRoot.transform, new Vector2(0f, -220f), new Vector2(300f, 60f), "BẮT ĐẦU NGÀY MỚI", defaultFont, Color.yellow);
             summaryUI.playAgainButton = playAgainBtn;
 
-            // ==========================================
             // MOBILE TOUCH CONTROLS UI
-            // ==========================================
             GameObject mobControls = CreateUIEmpty("MobileTouchControls", canvasObj.transform);
             SetRectTransform(mobControls, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
             MobileTouchControlsUI mobUI = mobControls.AddComponent<MobileTouchControlsUI>();
             mobUI.controlsRoot = mobControls;
 
-            // Joystick (Bottom Left)
             GameObject joyBg = CreateUIEmpty("JoystickBG", mobControls.transform);
             SetRectTransform(joyBg, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0.5f, 0.5f), new Vector2(140f, 140f), new Vector2(160f, 160f));
             AddImage(joyBg, new Color(1f, 1f, 1f, 0.25f));
@@ -745,24 +850,19 @@ namespace StreamerGame.Editor
             AddImage(joyHandle, new Color(1f, 1f, 1f, 0.6f));
             mobUI.joystickHandle = joyHandle.GetComponent<RectTransform>();
 
-            // Large Tactile Interact Button (Bottom Right)
             Button interactBtn = CreateSimpleButton("MobileInteractBtn", mobControls.transform, new Vector2(-140f, 140f), new Vector2(130f, 130f), "TƯƠNG\nTÁC", defaultFont, new Color(0.15f, 0.55f, 0.95f, 0.85f));
             SetRectTransform(interactBtn.gameObject, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(0.5f, 0.5f), new Vector2(-140f, 140f), new Vector2(130f, 130f));
             mobUI.interactButton = interactBtn;
 
-            // Phone Icon Button (Top Right)
             Button phoneBtn = CreateSimpleButton("MobilePhoneBtn", mobControls.transform, new Vector2(-80f, -80f), new Vector2(90f, 50f), "PHONE", defaultFont, new Color(0.2f, 0.7f, 0.4f, 0.85f));
             SetRectTransform(phoneBtn.gameObject, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(0.5f, 0.5f), new Vector2(-70f, -70f), new Vector2(90f, 50f));
             mobUI.phoneButton = phoneBtn;
 
-            // Pause Button (Top Left)
             Button pauseBtn = CreateSimpleButton("MobilePauseBtn", mobControls.transform, new Vector2(60f, -60f), new Vector2(60f, 40f), "||", defaultFont, new Color(0.4f, 0.4f, 0.4f, 0.8f));
             SetRectTransform(pauseBtn.gameObject, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0.5f, 0.5f), new Vector2(60f, -60f), new Vector2(60f, 40f));
             mobUI.pauseButton = pauseBtn;
 
-            // ==========================================
             // WIRE HUD MANAGER
-            // ==========================================
             HUDManager hud = canvasObj.AddComponent<HUDManager>();
             hud.phaseText = phaseText;
             hud.energySlider = energySlider;
@@ -860,12 +960,10 @@ namespace StreamerGame.Editor
             GameObject sliderObj = CreateUIEmpty(name, parent);
             SetRectTransform(sliderObj, new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), pos, new Vector2(220f, 25f));
 
-            // Background
             GameObject bg = CreateUIEmpty("Background", sliderObj.transform);
             SetRectTransform(bg, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
             AddImage(bg, new Color(0.2f, 0.2f, 0.25f, 0.8f));
 
-            // Fill Area & Fill
             GameObject fillArea = CreateUIEmpty("Fill Area", sliderObj.transform);
             SetRectTransform(fillArea, Vector2.zero, Vector2.one, new Vector2(0.5f, 0.5f), Vector2.zero, Vector2.zero);
             GameObject fill = CreateUIEmpty("Fill", fillArea.transform);
@@ -876,7 +974,6 @@ namespace StreamerGame.Editor
             slider.fillRect = fill.GetComponent<RectTransform>();
             slider.value = 1f;
 
-            // Label
             Text lbl = AddText(sliderObj, "Label", label, font, 14, Color.white, TextAnchor.MiddleLeft);
             SetRectTransform(lbl.gameObject, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, 0f), new Vector2(0f, 2f), new Vector2(0f, 20f));
 
