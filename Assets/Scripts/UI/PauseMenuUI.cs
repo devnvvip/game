@@ -10,8 +10,15 @@ namespace StreamerGame.UI
         public GameObject pauseMenuRoot;
         public Button resumeButton;
         public Button restartButton;
-        public Slider volumeSlider;
-        public Text volumeValueText;
+
+        [Header("Audio Controls")]
+        public Button musicToggleButton;
+        public Text musicToggleText;
+        public Slider musicVolumeSlider;
+
+        public Button sfxToggleButton;
+        public Text sfxToggleText;
+        public Slider sfxVolumeSlider;
 
         private void Start()
         {
@@ -19,10 +26,35 @@ namespace StreamerGame.UI
 
             if (resumeButton != null) resumeButton.onClick.AddListener(OnResumeClicked);
             if (restartButton != null) restartButton.onClick.AddListener(OnRestartClicked);
-            if (volumeSlider != null)
+
+            if (musicToggleButton != null) musicToggleButton.onClick.AddListener(OnMusicToggleClicked);
+            if (sfxToggleButton != null) sfxToggleButton.onClick.AddListener(OnSfxToggleClicked);
+
+            if (musicVolumeSlider != null)
             {
-                volumeSlider.value = AudioListener.volume;
-                volumeSlider.onValueChanged.AddListener(OnVolumeChanged);
+                if (SoundManager.Instance != null) musicVolumeSlider.value = SoundManager.Instance.MusicVolume;
+                musicVolumeSlider.onValueChanged.AddListener(OnMusicVolumeChanged);
+            }
+
+            if (sfxVolumeSlider != null)
+            {
+                if (SoundManager.Instance != null) sfxVolumeSlider.value = SoundManager.Instance.SfxVolume;
+                sfxVolumeSlider.onValueChanged.AddListener(OnSfxVolumeChanged);
+            }
+
+            if (SoundManager.Instance != null)
+            {
+                SoundManager.Instance.OnAudioSettingsChanged += UpdateAudioUI;
+            }
+
+            UpdateAudioUI();
+        }
+
+        private void OnDestroy()
+        {
+            if (SoundManager.Instance != null)
+            {
+                SoundManager.Instance.OnAudioSettingsChanged -= UpdateAudioUI;
             }
         }
 
@@ -32,6 +64,11 @@ namespace StreamerGame.UI
 
             bool willPause = !pauseMenuRoot.activeSelf;
             pauseMenuRoot.SetActive(willPause);
+
+            if (willPause)
+            {
+                UpdateAudioUI();
+            }
 
             if (GameManager.Instance != null)
             {
@@ -52,10 +89,41 @@ namespace StreamerGame.UI
             GameManager.Instance?.RestartDay();
         }
 
-        private void OnVolumeChanged(float val)
+        private void OnMusicToggleClicked()
         {
-            AudioListener.volume = val;
-            if (volumeValueText != null) volumeValueText.text = $"{Mathf.RoundToInt(val * 100)}%";
+            SoundManager.Instance?.ToggleMusic();
+            SoundManager.Instance?.PlayClick();
+        }
+
+        private void OnSfxToggleClicked()
+        {
+            SoundManager.Instance?.ToggleSFX();
+            SoundManager.Instance?.PlayClick();
+        }
+
+        private void OnMusicVolumeChanged(float val)
+        {
+            SoundManager.Instance?.SetMusicVolume(val);
+        }
+
+        private void OnSfxVolumeChanged(float val)
+        {
+            SoundManager.Instance?.SetSfxVolume(val);
+        }
+
+        private void UpdateAudioUI()
+        {
+            if (SoundManager.Instance == null) return;
+
+            if (musicToggleText != null)
+            {
+                musicToggleText.text = SoundManager.Instance.IsMusicEnabled ? "Âm Nhạc: [BẬT]" : "Âm Nhạc: [TẮT]";
+            }
+
+            if (sfxToggleText != null)
+            {
+                sfxToggleText.text = SoundManager.Instance.IsSfxEnabled ? "Hiệu Ứng: [BẬT]" : "Hiệu Ứng: [TẮT]";
+            }
         }
     }
 }

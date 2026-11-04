@@ -4,7 +4,15 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '**.md'
+      - 'CREDITS.md'
+      - 'BUILD_REPORT.md'
   workflow_dispatch:
+
+concurrency:
+  group: build-ios-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-ios:
@@ -46,18 +54,36 @@ jobs:
       - name: Export Xcode Project from Unity
         run: |
           echo "Using Unity Editor at: $UNITY_EDITOR_PATH"
+          set +e
           "$UNITY_EDITOR_PATH" \
             -acceptSoftwareTermsForThisRunOnly \
             -batchmode \
             -projectPath . \
             -executeMethod StreamerGame.Editor.BuildScript.BuildIOS \
             -quit \
-            -logFile unity_ios_export.log || true
+            -logFile unity_ios_export.log
+          UNITY_EXIT=$?
+          set -e
 
           if [ -f "unity_ios_export.log" ]; then
             echo "=== UNITY BUILD LOG (LAST 100 LINES) ==="
             tail -n 100 unity_ios_export.log
+            echo "=== COMPILATION ERRORS (IF ANY) ==="
+            grep -E "error CS|Error|Exception" unity_ios_export.log | head -n 40 || true
           fi
+
+          if [ $UNITY_EXIT -ne 0 ]; then
+            echo "Unity export failed with exit code $UNITY_EXIT!"
+            exit $UNITY_EXIT
+          fi
+
+      - name: Upload Unity Export Log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unity-ios-export-log
+          path: unity_ios_export.log
+          if-no-files-found: ignore
 
       - name: Verify Xcode Project
         run: |

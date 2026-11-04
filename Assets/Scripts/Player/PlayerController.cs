@@ -174,6 +174,11 @@ namespace StreamerGame.Player
                 look = mouse.delta.ReadValue() * mouseSensitivity * 0.5f;
             }
 
+            if (MobileInputController.Instance != null)
+            {
+                look += MobileInputController.Instance.LookInput * 0.5f;
+            }
+
             pitch = Mathf.Clamp(pitch - look.y, -30f, 30f);
             float yaw = Mathf.Clamp(cameraHolder.localEulerAngles.y + look.x, -45f, 45f);
             if (cameraHolder != null)
