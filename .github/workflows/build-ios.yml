@@ -1,1 +1,120 @@
+name: Build iOS IPA
 
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    name: Build iOS IPA (Xcode & Package)
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Extract Unity version from ProjectVersion.txt
+        id: unity_version
+        run: |
+          VERSION=$(grep -oE "m_EditorVersion: [0-9a-fA-F.]+" ProjectSettings/ProjectVersion.txt | awk '{print $2}')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Target Unity Version: $VERSION"
+
+      - name: Cache Unity Library
+        uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-iOS-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-iOS-
+            Library-
+
+      - name: Build Unity Project to Xcode
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        with:
+          targetPlatform: iOS
+          unityVersion: ${{ steps.unity_version.outputs.version }}
+          buildMethod: StreamerGame.Editor.BuildScript.BuildIOS
+          cacheUnityInstallationOnMac: true
+
+      - name: Find Xcode Project Directory
+        id: find_xcode
+        run: |
+          if [ -d "Builds/iOS" ]; then
+            echo "xcode_dir=Builds/iOS" >> $GITHUB_OUTPUT
+          elif [ -d "build/iOS" ]; then
+            echo "xcode_dir=build/iOS" >> $GITHUB_OUTPUT
+          else
+            echo "Error: No Xcode project found in Builds/iOS or build/iOS!"
+            ls -la
+            exit 1
+          fi
+
+      - name: Build Xcode Project (Unsigned)
+        run: |
+          XCODE_DIR="${{ steps.find_xcode.outputs.xcode_dir }}"
+          echo "Building Xcode project at: $XCODE_DIR"
+          cd "$XCODE_DIR"
+
+          # Select scheme (Unity-iPhone)
+          SCHEME="Unity-iPhone"
+          if [ ! -d "Unity-iPhone.xcodeproj" ]; then
+            PROJ=$(find . -name "*.xcodeproj" -maxdepth 1 | head -n 1)
+            PROJ_NAME=$(basename "$PROJ" .xcodeproj)
+            SCHEME="$PROJ_NAME"
+          fi
+
+          echo "Using scheme: $SCHEME"
+
+          xcodebuild clean build \
+            -project Unity-iPhone.xcodeproj \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE="" \
+            -destination 'generic/platform=iOS' \
+            ONLY_ACTIVE_ARCH=NO \
+            -derivedDataPath build_output
+
+      - name: Package Unsigned IPA
+        run: |
+          XCODE_DIR="${{ steps.find_xcode.outputs.xcode_dir }}"
+          cd "$XCODE_DIR"
+
+          APP_PATH=$(find build_output/Build/Products/Release-iphoneos -name "*.app" -maxdepth 1 | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Searching fallback build directories for .app..."
+            APP_PATH=$(find . -name "*.app" | head -n 1)
+          fi
+
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: No .app bundle found after Xcode build!"
+            exit 1
+          fi
+
+          echo "Found application bundle at: $APP_PATH"
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+
+          zip -r game-ios-ipa.ipa Payload
+          echo "Successfully packaged game-ios-ipa.ipa"
+          ls -lh game-ios-ipa.ipa
+
+      - name: Upload iOS IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: game-ios-ipa
+          path: ${{ steps.find_xcode.outputs.xcode_dir }}/game-ios-ipa.ipa
+          if-no-files-found: error

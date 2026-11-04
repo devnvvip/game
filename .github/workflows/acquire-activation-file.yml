@@ -1,0 +1,31 @@
+name: Acquire Unity Activation File
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  activation:
+    name: Request Manual Activation File (.alf)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract Unity version from ProjectVersion.txt
+        id: unity_version
+        run: |
+          VERSION=$(grep -oE "m_EditorVersion: [0-9a-fA-F.]+" ProjectSettings/ProjectVersion.txt | awk '{print $2}')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected Unity version: $VERSION"
+
+      - name: Request manual activation file
+        id: getManualLicenseFile
+        uses: game-ci/unity-request-activation-file@v2
+        with:
+          unityVersion: ${{ steps.unity_version.outputs.version }}
+
+      - name: Upload .alf activation file artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-activation-file
+          path: ${{ steps.getManualLicenseFile.outputs.filePath }}
