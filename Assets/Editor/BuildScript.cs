@@ -51,6 +51,9 @@ namespace StreamerGame.Editor
         [MenuItem("Build/Build iOS")]
         public static void BuildIOS()
         {
+            Debug.Log("[BuildScript] Pre-building scene to guarantee latest assets & materials...");
+            SceneAutoBuilder.RebuildScene();
+
             ConfigureIOSSettings();
 
             string[] scenes = EditorBuildSettings.scenes

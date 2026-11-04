@@ -22,6 +22,8 @@ namespace StreamerGame.Editor
             GeneratePlasterWall();
             GenerateMonitorScreens();
             GenerateFabricLinen();
+            GeneratePosters();
+            GenerateUISprites();
 
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             ConfigureTextureImporter();
@@ -283,6 +285,111 @@ namespace StreamerGame.Editor
             SaveTexture(right, $"{TextureDir}/Monitor_RightMixer.png");
         }
 
+        private static void GeneratePosters()
+        {
+            // Poster 1: Idol Concert
+            int pw = 512, ph = 768;
+            Texture2D concert = new Texture2D(pw, ph, TextureFormat.RGBA32, true);
+            for (int y = 0; y < ph; y++)
+            {
+                for (int x = 0; x < pw; x++)
+                {
+                    float u = (float)x / pw;
+                    float v = (float)y / ph;
+                    Color bg = Color.Lerp(new Color(0.1f, 0.05f, 0.2f), new Color(0.35f, 0.1f, 0.45f), v);
+                    // Light beams
+                    float beam = Mathf.Sin((u - 0.5f) * 12f + v * 4f);
+                    if (beam > 0.6f && v > 0.4f) bg += new Color(0.2f, 0.1f, 0.3f);
+                    // Gold border
+                    if (x < 16 || x > pw - 17 || y < 16 || y > ph - 17) bg = new Color(0.85f, 0.72f, 0.3f);
+                    concert.SetPixel(x, y, bg);
+                }
+            }
+            concert.Apply();
+            SaveTexture(concert, $"{TextureDir}/Poster_IdolConcert.png");
+
+            // Poster 2: Silver/Gold Play Award
+            Texture2D award = new Texture2D(512, 512, TextureFormat.RGBA32, true);
+            for (int y = 0; y < 512; y++)
+            {
+                for (int x = 0; x < 512; x++)
+                {
+                    float u = (float)x / 512f;
+                    float v = (float)y / 512f;
+                    Color bg = new Color(0.12f, 0.12f, 0.15f);
+                    // Golden plaque in center
+                    if (u > 0.15f && u < 0.85f && v > 0.2f && v < 0.8f)
+                    {
+                        bg = new Color(0.82f, 0.70f, 0.28f);
+                        // inner play button triangle
+                        float cx = (u - 0.5f) * 3f;
+                        float cy = (v - 0.5f) * 3f;
+                        if (cx > -0.2f && cx < 0.3f && Mathf.Abs(cy) < (0.3f - cx * 0.5f))
+                        {
+                            bg = new Color(0.98f, 0.95f, 0.7f);
+                        }
+                    }
+                    if (x < 12 || x > 500 || y < 12 || y > 500) bg = new Color(0.25f, 0.25f, 0.28f);
+                    award.SetPixel(x, y, bg);
+                }
+            }
+            award.Apply();
+            SaveTexture(award, $"{TextureDir}/Poster_GoldPlayAward.png");
+        }
+
+        private static void GenerateUISprites()
+        {
+            int w = 128, h = 128, r = 24;
+            // 9-slice Rounded Box
+            Texture2D box = new Texture2D(w, h, TextureFormat.RGBA32, false);
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    int cx = x < r ? r : (x > w - r - 1 ? w - r - 1 : x);
+                    int cy = y < r ? r : (y > h - r - 1 ? h - r - 1 : y);
+                    float d = Vector2.Distance(new Vector2(x, y), new Vector2(cx, cy));
+                    float alpha = 1f - Mathf.Clamp01(d - (r - 1.5f));
+                    box.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+                }
+            }
+            box.Apply();
+            SaveTexture(box, $"{TextureDir}/UIRoundedBox.png");
+
+            // Circle
+            Texture2D circle = new Texture2D(w, h, TextureFormat.RGBA32, false);
+            Vector2 c = new Vector2(w / 2f, h / 2f);
+            float radius = (w / 2f) - 1.5f;
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    float d = Vector2.Distance(new Vector2(x, y), c);
+                    float alpha = 1f - Mathf.Clamp01(d - radius);
+                    circle.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+                }
+            }
+            circle.Apply();
+            SaveTexture(circle, $"{TextureDir}/UICircle.png");
+
+            // Ring
+            Texture2D ring = new Texture2D(w, h, TextureFormat.RGBA32, false);
+            float outerR = (w / 2f) - 1.5f;
+            float innerR = outerR - 12f;
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    float d = Vector2.Distance(new Vector2(x, y), c);
+                    float outerAlpha = 1f - Mathf.Clamp01(d - outerR);
+                    float innerAlpha = Mathf.Clamp01(d - innerR);
+                    ring.SetPixel(x, y, new Color(1f, 1f, 1f, outerAlpha * innerAlpha));
+                }
+            }
+            ring.Apply();
+            SaveTexture(ring, $"{TextureDir}/UIRing.png");
+        }
+
         private static Texture2D GenerateNormalMapFromHeight(Texture2D heightMap, float strength)
         {
             int w = heightMap.width;
@@ -365,6 +472,32 @@ namespace StreamerGame.Editor
                     {
                         importer.wrapMode = TextureWrapMode.Repeat;
                         importer.anisoLevel = 4;
+                        importer.SaveAndReimport();
+                    }
+                }
+            }
+
+            string[] spriteFiles = new string[]
+            {
+                $"{TextureDir}/UIRoundedBox.png",
+                $"{TextureDir}/UICircle.png",
+                $"{TextureDir}/UIRing.png"
+            };
+
+            foreach (string file in spriteFiles)
+            {
+                if (File.Exists(file))
+                {
+                    TextureImporter importer = AssetImporter.GetAtPath(file) as TextureImporter;
+                    if (importer != null)
+                    {
+                        importer.textureType = TextureImporterType.Sprite;
+                        importer.spriteImportMode = SpriteImportMode.Single;
+                        importer.alphaIsTransparency = true;
+                        if (file.Contains("RoundedBox"))
+                        {
+                            importer.spriteBorder = new Vector4(24, 24, 24, 24);
+                        }
                         importer.SaveAndReimport();
                     }
                 }
