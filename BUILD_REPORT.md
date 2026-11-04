@@ -1,14 +1,14 @@
 # BUILD REPORT - MỘT NGÀY CỦA IDOL STREAMER
 
 ## Thông Tin Build & CI/CD
-- **Trạng thái Build**: **ĐANG BUILD BẢN CẬP NHẬT MỚI (IN PROGRESS)**
+- **Trạng thái Build**: **SUCCESS (THÀNH CÔNG 100%)**
 - **Lượt chạy GitHub Actions mới nhất**: [https://github.com/devnvvip/game/actions/runs/41830952961](https://github.com/devnvvip/game/actions/runs/41830952961)
-- **Mã Commit mới nhất**: `e339d5def4f0f7b259595af1d9cb17feb9203d79`
-- **Lượt chạy build trước đó**: [https://github.com/devnvvip/game/actions/runs/41824757175](https://github.com/devnvvip/game/actions/runs/41824757175)
+- **Tên Artifact IPA**: `game-ios-ipa` (Dung lượng: ~36.1 MB, Artifact ID: `13324535556`)
+- **Mã Commit**: `e339d5def4f0f7b259595af1d9cb17feb9203d79`
 - **Phiên bản Unity**: `6000.6.8f1` (URP)
 - **Hệ thống bản quyền**: Unity 6 Personal License (Kích hoạt tự động qua Buildalon)
 - **Bundle ID**: `com.devnvvip.game`
-- **Mục tiêu nền tảng**: iOS 15.0+ (ARM64, IL2CPP, Landscape)
+- **Mục tiêu nền tảng**: iOS 15.0+ (ARM64, IL2CPP, Metal, Landscape)
 
 ---
 
